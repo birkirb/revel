@@ -200,14 +200,14 @@ func newListener(network string, localAddress string) (net.Listener, error) {
 }
 
 func startServe(localAddress string, listener net.Listener) {
-	// Server = &http.Server{
-	// 	Addr:    localAddress,
-	// 	Handler: http.HandlerFunc(handle),
-	// }
+	Server = &http.Server{
+		Addr:    localAddress,
+		Handler: http.HandlerFunc(handle),
+	}
 
-	if err := http.Serve(listener, http.HandlerFunc(handle)); err != nil {
+	if err := Server.Serve(listener); err != nil {
 		if !goagain.IsErrClosing(err) {
-			ERROR.Fatalln("Failed to serve:", Server.Serve(listener))
+			ERROR.Fatalln("Failed to serve:", err)
 		}
 	}
 }
