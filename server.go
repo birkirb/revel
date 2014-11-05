@@ -11,6 +11,8 @@ import (
 
 	"github.com/rcrowley/goagain"
 
+	"crypto/tls"
+
 	"code.google.com/p/go.net/websocket"
 )
 
@@ -98,34 +100,30 @@ func Run(port int) {
 		MainTemplateLoader.Refresh()
 	}
 
-	Server = &http.Server{
-		Addr:    localAddress,
-		Handler: http.HandlerFunc(handle),
-	}
-
 	runStartupHooks()
 
 	listener, err := goagain.Listener()
+
 	if nil != err {
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			INFO.Printf("Listening on %s...\n", localAddress)
 		}()
 
-		listener, err = net.Listen(network, localAddress)
+		listener, err = newListener(network, localAddress)
 		if err != nil {
 			ERROR.Fatalln("Failed to listen:", err)
 			return
 		}
 
-		go startServe(network, localAddress, listener)
+		go startServe(localAddress, listener)
 	} else {
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			INFO.Printf("Resuming Listening on %s...\n", localAddress)
 		}()
 
-		go startServe(network, localAddress, listener)
+		go startServe(localAddress, listener)
 
 		// Kill the parent, now that the child has started successfully.
 		if err := goagain.Kill(); nil != err {
@@ -133,14 +131,14 @@ func Run(port int) {
 		}
 	}
 
-	INFO.Printf("Monitoring signals.\n")
+	INFO.Println("Monitoring signals.")
 
 	// Block the main goroutine awaiting signals.
 	if _, err := goagain.Wait(listener); nil != err {
 		ERROR.Fatalln(err)
 	}
 
-	INFO.Printf("Closing listener.\n")
+	INFO.Println("Closing listener.")
 
 	// Close the listener so we stop accepting new requests.
 	// Existing ones should still be completed.
@@ -148,32 +146,70 @@ func Run(port int) {
 		ERROR.Fatalln(err)
 	}
 
-	INFO.Printf("Waiting for handlers to complete.\n")
+	INFO.Println("Waiting for handlers to complete.")
 	wg.Wait()
 
-	INFO.Printf("Running Shutdown Hooks..\n")
+	INFO.Println("Running Shutdown Hooks.")
 	runShutdownHooks()
 
-	INFO.Printf("Exit.\n")
+	INFO.Println("Exit.")
 }
 
-func startServe(network string, localAddress string, listener net.Listener) {
-	ERROR.Fatalln("Failed to serve:", Server.Serve(listener))
-	// if HttpSsl {
-	// 	if network != "tcp" {
-	// 		// This limitation is just to reduce complexity, since it is standard
-	// 		// to terminate SSL upstream when using unix domain sockets.
-	// 		ERROR.Fatalln("SSL is only supported for TCP sockets. Specify a port to listen on.")
-	// 	}
-	// 	ERROR.Fatalln("Failed to listen:",
-	// 		Server.ListenAndServeTLS(HttpSslCert, HttpSslKey))
-	// } else {
-	// 	listener, err := net.Listen(network, localAddress)
-	// 	if err != nil {
-	// 		ERROR.Fatalln("Failed to listen:", err)
-	// 	}
-	// 	ERROR.Fatalln("Failed to serve:", Server.Serve(listener))
+func newListener(network string, localAddress string) (net.Listener, error) {
+	var err error
+	var listener net.Listener
+	var tlsConfig *tls.Config
+
+	if HttpSsl {
+		if network != "tcp" {
+			// This limitation is just to reduce complexity, since it is standard
+			// to terminate SSL upstream when using unix domain sockets.
+			ERROR.Fatalln("SSL is only supported for TCP sockets. Specify a port to listen on.")
+		}
+
+		// basically, a rewite of ListenAndServeTLS
+		if localAddress == "" {
+			localAddress = ":https"
+		}
+
+		tlsConfig = &tls.Config{}
+		// TODO:
+		// if srv.TLSConfig != nil {
+		// 	*tlsConfig = srv.TLSConfig
+		// }
+
+		// Not sure
+		if tlsConfig.NextProtos == nil {
+			tlsConfig.NextProtos = []string{"http/1.1"}
+		}
+
+		tlsConfig.Certificates = make([]tls.Certificate, 1)
+		tlsConfig.Certificates[0], err = tls.LoadX509KeyPair(HttpSslCert, HttpSslKey)
+		if err != nil {
+			ERROR.Println(err)
+		}
+
+		listener, err = net.Listen(network, localAddress)
+		if err != nil {
+			return nil, err
+		}
+		return tls.NewListener(listener, tlsConfig), nil
+	} else {
+		return net.Listen(network, localAddress)
+	}
+}
+
+func startServe(localAddress string, listener net.Listener) {
+	// Server = &http.Server{
+	// 	Addr:    localAddress,
+	// 	Handler: http.HandlerFunc(handle),
 	// }
+
+	if err := http.Serve(listener, http.HandlerFunc(handle)); err != nil {
+		if !goagain.IsErrClosing(err) {
+			ERROR.Fatalln("Failed to serve:", Server.Serve(listener))
+		}
+	}
 }
 
 func runStartupHooks() {
