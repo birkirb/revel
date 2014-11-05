@@ -301,6 +301,6 @@ func OnAppStart(f func()) {
 // This can be useful when you need to close client connections, files,
 // shutdown or terminate monitors and other goroutines.
 //
-func OnAppExit(f func()) {
+func OnAppShutdown(f func()) {
 	shutdownHooks = append(shutdownHooks, f)
 }
