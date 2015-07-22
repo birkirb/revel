@@ -1,14 +1,15 @@
 package revel
 
 import (
-	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/rcrowley/goagain"
 	"golang.org/x/net/websocket"
 )
 
@@ -17,6 +18,7 @@ var (
 	MainTemplateLoader *TemplateLoader
 	MainWatcher        *Watcher
 	Server             *http.Server
+	wg                 sync.WaitGroup
 )
 
 // This method handles all requests.  It dispatches to handleInternal after
@@ -40,6 +42,8 @@ func handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleInternal(w http.ResponseWriter, r *http.Request, ws *websocket.Conn) {
+	wg.Add(1)
+	defer wg.Done()
 	var (
 		req  = NewRequest(r)
 		resp = NewResponse(w)
@@ -108,26 +112,78 @@ func Run(port int) {
 		MainWatcher.Listen(MainTemplateLoader, MainTemplateLoader.paths...)
 	}
 
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		fmt.Printf("Listening on %s...\n", localAddress)
-	}()
+	// *** ORIGINAL CODE START
+	// go func() {
+	// 	time.Sleep(100 * time.Millisecond)
+	// 	fmt.Printf("Listening on %s...\n", localAddress)
+	// }()
 
-	if HttpSsl {
-		if network != "tcp" {
-			// This limitation is just to reduce complexity, since it is standard
-			// to terminate SSL upstream when using unix domain sockets.
-			ERROR.Fatalln("SSL is only supported for TCP sockets. Specify a port to listen on.")
-		}
-		ERROR.Fatalln("Failed to listen:",
-			Server.ListenAndServeTLS(HttpSslCert, HttpSslKey))
-	} else {
-		listener, err := net.Listen(network, localAddress)
+	// if HttpSsl {
+	// 	if network != "tcp" {
+	// 		// This limitation is just to reduce complexity, since it is standard
+	// 		// to terminate SSL upstream when using unix domain sockets.
+	// 		ERROR.Fatalln("SSL is only supported for TCP sockets. Specify a port to listen on.")
+	// 	}
+	// 	ERROR.Fatalln("Failed to listen:",
+	// 		Server.ListenAndServeTLS(HttpSslCert, HttpSslKey))
+	// } else {
+	// 	listener, err := net.Listen(network, localAddress)
+	// 	if err != nil {
+	// 		ERROR.Fatalln("Failed to listen:", err)
+	// 	}
+	// 	ERROR.Fatalln("Failed to serve:", Server.Serve(listener))
+	// }
+	// *** ORIGINAL CODE END
+
+	listener, err := goagain.Listener()
+
+	if nil != err {
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			INFO.Printf("Listening on %s...\n", localAddress)
+		}()
+
+		listener, err = newListener(network, localAddress)
 		if err != nil {
 			ERROR.Fatalln("Failed to listen:", err)
 		}
-		ERROR.Fatalln("Failed to serve:", Server.Serve(listener))
+
+		go startServe(localAddress, listener)
+	} else {
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			INFO.Printf("Resuming Listening on %s...\n", localAddress)
+		}()
+
+		go startServe(localAddress, listener)
+
+		// Kill the parent, now that the child has started successfully.
+		if err := goagain.Kill(); nil != err {
+			ERROR.Fatalln(err)
+		}
 	}
+
+	INFO.Println("Monitoring signals.")
+
+	// Block the main goroutine awaiting signals.
+	if _, err := goagain.Wait(listener); nil != err {
+		ERROR.Fatalln(err)
+	}
+
+	INFO.Println("Closing listener.")
+
+	// Close the listener so we stop accepting new requests.
+	// Existing ones should still be completed.
+	if err := listener.Close(); nil != err {
+		ERROR.Fatalln(err)
+	}
+
+	INFO.Println("Waiting for handlers to complete.")
+	wg.Wait()
+	INFO.Println("Running Shutdown Hooks.")
+	runShutdownHooks()
+
+	INFO.Println("Exit.")
 }
 
 func runStartupHooks() {
@@ -136,7 +192,14 @@ func runStartupHooks() {
 	}
 }
 
+func runShutdownHooks() {
+	for _, hook := range shutdownHooks {
+		hook()
+	}
+}
+
 var startupHooks []func()
+var shutdownHooks []func()
 
 // Register a function to be run at app startup.
 //
@@ -176,4 +239,99 @@ var startupHooks []func()
 //
 func OnAppStart(f func()) {
 	startupHooks = append(startupHooks, f)
+}
+
+// Register a function to be run at app shutdown.
+//
+// The order you register the functions will be the order they are run.
+// You can think of it as a FIFO queue.
+// This process will happen after the server has received a shutdown signal,
+// and after the server has stopped listening for connections.
+//
+// If your application spawns it's own goroutines it will also be responsible
+// for the graceful cleanup of those. Otherwise they will terminate with the main thread.
+//
+// Example:
+//
+//      // from: yourapp/app/controllers/somefile.go
+//      func ShutdownBackgroundDBProcess() {
+//          // waits for background process to complete,
+//          // or sends a signal on a termination channel.
+//      }
+//
+//      func CloseDB() {
+//          // do DB cleanup stuff here
+//      }
+//
+//      // from: yourapp/app/init.go
+//      func init() {
+//          // set up filters...
+//
+//          // register startup functions
+//          revel.OnAppShutdown(ShutdownBackgroundDBProcess)
+//          revel.OnAppShutdown(CloseDB)
+//      }
+//
+// This can be useful when you need to close client connections, files,
+// shutdown or terminate monitors and other goroutines.
+//
+func OnAppShutdown(f func()) {
+	shutdownHooks = append(shutdownHooks, f)
+}
+
+func newListener(network string, localAddress string) (net.Listener, error) {
+	// var err error
+	// var listener net.Listener
+	// var tlsConfig *tls.Config
+
+	// if HttpSsl {
+	// 	if network != "tcp" {
+	// 		// This limitation is just to reduce complexity, since it is standard
+	// 		// to terminate SSL upstream when using unix domain sockets.
+	// 		ERROR.Fatalln("SSL is only supported for TCP sockets. Specify a port to listen on.")
+	// 	}
+
+	// 	// basically, a rewite of ListenAndServeTLS
+	// 	if localAddress == "" {
+	// 		localAddress = ":https"
+	// 	}
+
+	// 	tlsConfig = &tls.Config{}
+	// 	// TODO:
+	// 	// if srv.TLSConfig != nil {
+	// 	// 	*tlsConfig = srv.TLSConfig
+	// 	// }
+
+	// 	// Not sure
+	// 	if tlsConfig.NextProtos == nil {
+	// 		tlsConfig.NextProtos = []string{"http/1.1"}
+	// 	}
+
+	// 	tlsConfig.Certificates = make([]tls.Certificate, 1)
+	// 	tlsConfig.Certificates[0], err = tls.LoadX509KeyPair(HttpSslCert, HttpSslKey)
+	// 	if err != nil {
+	// 		ERROR.Println(err)
+	// 	}
+
+	// 	listener, err = net.Listen(network, localAddress)
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
+	// 	return tls.NewListener(listener, tlsConfig), nil
+	// }
+
+	return net.Listen(network, localAddress)
+}
+
+func startServe(localAddress string, listener net.Listener) {
+	Server = &http.Server{
+		Addr:    localAddress,
+		Handler: http.HandlerFunc(handle),
+	}
+
+	if err := Server.Serve(listener); err != nil {
+		if !goagain.IsErrClosing(err) {
+			ERROR.Fatalln("Failed to serve:", err)
+		}
+	}
 }
