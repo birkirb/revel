@@ -1,6 +1,7 @@
 package revel
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -111,12 +112,13 @@ func Run(port int) {
 		MainWatcher.Listen(MainTemplateLoader, MainTemplateLoader.paths...)
 	}
 
-	// *** ORIGINAL CODE START
-	// go func() {
-	// 	time.Sleep(100 * time.Millisecond)
-	// 	fmt.Printf("Listening on %s...\n", localAddress)
-	// }()
+	// Crazy Harness needs this output for "revel run" to work.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		fmt.Printf("Listening on %s...\n", localAddress)
+	}()
 
+	// *** ORIGINAL CODE START
 	// if HttpSsl {
 	// 	if network != "tcp" {
 	// 		// This limitation is just to reduce complexity, since it is standard
