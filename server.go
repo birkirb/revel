@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +43,10 @@ func handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleInternal(w http.ResponseWriter, r *http.Request, ws *websocket.Conn) {
+	// TODO For now this okay to put logger here for all the requests
+	// However, it's best to have logging handler at server entry level
+	start := time.Now()
+
 	wg.Add(1)
 	defer wg.Done()
 	var (
@@ -61,6 +66,46 @@ func handleInternal(w http.ResponseWriter, r *http.Request, ws *websocket.Conn) 
 	if w, ok := resp.Out.(io.Closer); ok {
 		w.Close()
 	}
+
+	// Revel request access log format
+	// RequestStartTime ClientIP ResponseStatus RequestLatency HTTPMethod URLPath
+	// Sample format:
+	// 2016/05/25 17:46:37.112 127.0.0.1 200  270.157µs GET /
+	requestLog.Printf("%v %v %v %10v %v %v",
+		start.Format(requestLogTimeFormat),
+		ClientIP(r),
+		c.Response.Status,
+		time.Since(start),
+		r.Method,
+		r.URL.Path,
+	)
+}
+
+// InitServer intializes the server and returns the handler
+// It can be used as an alternative entry-point if one needs the http handler
+// to be exposed. E.g. to run on multiple addresses and ports or to set custom
+// TLS options.
+func InitServer() http.HandlerFunc {
+	runStartupHooks()
+
+	// Load templates
+	MainTemplateLoader = NewTemplateLoader(TemplatePaths)
+	MainTemplateLoader.Refresh()
+
+	// The "watch" config variable can turn on and off all watching.
+	// (As a convenient way to control it all together.)
+	if Config.BoolDefault("watch", true) {
+		MainWatcher = NewWatcher()
+		Filters = append([]Filter{WatchFilter}, Filters...)
+	}
+
+	// If desired (or by default), create a watcher for templates and routes.
+	// The watcher calls Refresh() on things on the first request.
+	if MainWatcher != nil && Config.BoolDefault("watch.templates", true) {
+		MainWatcher.Listen(MainTemplateLoader, MainTemplateLoader.paths...)
+	}
+
+	return http.HandlerFunc(handle)
 }
 
 // Run the server.
@@ -89,33 +134,16 @@ func Run(port int) {
 	Server = &http.Server{
 		Addr:         localAddress,
 		Handler:      http.HandlerFunc(handle),
-		ReadTimeout:  time.Minute,
-		WriteTimeout: time.Minute,
+		ReadTimeout:  time.Duration(Config.IntDefault("timeout.read", 0)) * time.Second,
+		WriteTimeout: time.Duration(Config.IntDefault("timeout.write", 0)) * time.Second,
 	}
 
-	runStartupHooks()
-
-	// Load templates
-	MainTemplateLoader = NewTemplateLoader(TemplatePaths)
-	MainTemplateLoader.Refresh()
-
-	// The "watch" config variable can turn on and off all watching.
-	// (As a convenient way to control it all together.)
-	if Config.BoolDefault("watch", true) {
-		MainWatcher = NewWatcher()
-		Filters = append([]Filter{WatchFilter}, Filters...)
-	}
-
-	// If desired (or by default), create a watcher for templates and routes.
-	// The watcher calls Refresh() on things on the first request.
-	if MainWatcher != nil && Config.BoolDefault("watch.templates", true) {
-		MainWatcher.Listen(MainTemplateLoader, MainTemplateLoader.paths...)
-	}
+	InitServer()
 
 	// Crazy Harness needs this output for "revel run" to work.
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		fmt.Printf("Listening on %s...\n", localAddress)
+		fmt.Printf("Listening on %s...\n", Server.Addr)
 	}()
 
 	// *** ORIGINAL CODE START
@@ -154,11 +182,16 @@ func Run(port int) {
 }
 
 func runStartupHooks() {
+	sort.Sort(startupHooks)
 	for _, hook := range startupHooks {
-		hook()
+		hook.f()
 	}
 }
 
+type StartupHook struct {
+	order int
+	f     func()
+}
 func runShutdownHooks() {
 	for _, hook := range shutdownHooks {
 		hook()
@@ -167,6 +200,22 @@ func runShutdownHooks() {
 
 var startupHooks []func()
 var shutdownHooks []func()
+
+type StartupHooks []StartupHook
+
+var startupHooks StartupHooks
+
+func (slice StartupHooks) Len() int {
+	return len(slice)
+}
+
+func (slice StartupHooks) Less(i, j int) bool {
+	return slice[i].order < slice[j].order
+}
+
+func (slice StartupHooks) Swap(i, j int) {
+	slice[i], slice[j] = slice[j], slice[i]
+}
 
 // Register a function to be run at app startup.
 //
@@ -204,8 +253,12 @@ var shutdownHooks []func()
 // This can be useful when you need to establish connections to databases or third-party services,
 // setup app components, compile assets, or any thing you need to do between starting Revel and accepting connections.
 //
-func OnAppStart(f func()) {
-	startupHooks = append(startupHooks, f)
+func OnAppStart(f func(), order ...int) {
+	o := 1
+	if len(order) > 0 {
+		o = order[0]
+	}
+	startupHooks = append(startupHooks, StartupHook{order: o, f: f})
 }
 
 // Register a function to be run at app shutdown.
