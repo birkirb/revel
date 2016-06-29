@@ -2,12 +2,13 @@ package revel
 
 import (
 	"bytes"
-	"code.google.com/p/go.net/websocket"
 	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/net/websocket"
 )
 
 type Request struct {
@@ -78,7 +79,8 @@ func ResolveFormat(req *http.Request) string {
 		strings.Contains(accept, "text/html"):
 		return "html"
 	case strings.Contains(accept, "application/json"),
-		strings.Contains(accept, "text/javascript"):
+		strings.Contains(accept, "text/javascript"),
+		strings.Contains(accept, "application/javascript"):
 		return "json"
 	case strings.Contains(accept, "application/xml"),
 		strings.Contains(accept, "text/xml"):

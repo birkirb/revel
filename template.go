@@ -29,6 +29,8 @@ type TemplateLoader struct {
 	paths []string
 	// Map from template name to the path from whence it was loaded.
 	templatePaths map[string]string
+	// templateNames is a map from lower case template name to the real template name.
+	templateNames map[string]string
 }
 
 type Template interface {
@@ -124,7 +126,7 @@ var (
 			if !ok {
 				return ""
 			}
-			return template.HTML(Message(str, message, args...))
+			return template.HTML(MessageFunc(str, message, args...))
 		},
 
 		// Replaces newlines with <br>
@@ -192,6 +194,7 @@ func (loader *TemplateLoader) Refresh() *Error {
 
 	loader.compileError = nil
 	loader.templatePaths = map[string]string{}
+	loader.templateNames = map[string]string{}
 
 	// Set the template delimiters for the project if present, then split into left
 	// and right delimiters around a space character
@@ -228,33 +231,6 @@ func (loader *TemplateLoader) Refresh() *Error {
 				return nil
 			}
 
-			// is it a symlinked template?
-			link, err := os.Lstat(path)
-			if err == nil && link.Mode()&os.ModeSymlink == os.ModeSymlink {
-				TRACE.Println("symlink template:", path)
-				// lookup the actual target & check for goodness
-				targetPath, err := filepath.EvalSymlinks(path)
-				if err != nil {
-					ERROR.Println("Failed to read symlink", err)
-					return err
-				}
-				targetInfo, err := os.Stat(targetPath)
-				if err != nil {
-					ERROR.Println("Failed to stat symlink target", err)
-					return err
-				}
-
-				// set the template path to the target of the symlink
-				path = targetPath
-				info = targetInfo
-
-				// need to save state and restore for recursive call to Walk on symlink
-				tmp := fullSrcDir
-				fullSrcDir = filepath.Dir(targetPath)
-				filepath.Walk(targetPath, templateWalker)
-				fullSrcDir = tmp
-			}
-
 			// Walk into watchable directories
 			if info.IsDir() {
 				if !loader.WatchDir(info) {
@@ -279,11 +255,13 @@ func (loader *TemplateLoader) Refresh() *Error {
 				}
 
 				// If we already loaded a template of this name, skip it.
-				if _, ok := loader.templatePaths[templateName]; ok {
+				lowerTemplateName := strings.ToLower(templateName)
+				if _, ok := loader.templateNames[lowerTemplateName]; ok {
 					return nil
 				}
 
 				loader.templatePaths[templateName] = path
+				loader.templateNames[lowerTemplateName] = templateName
 
 				// Load the file if we haven't already
 				if fileStr == "" {
@@ -356,7 +334,13 @@ func (loader *TemplateLoader) Refresh() *Error {
 			return nil
 		}
 
-		funcErr := filepath.Walk(fullSrcDir, templateWalker)
+		if _, err = os.Lstat(fullSrcDir); os.IsNotExist(err) {
+			// #1058 Given views/template path is not exists
+			// so no need to walk, move on to next path
+			continue
+		}
+
+		funcErr := Walk(fullSrcDir, templateWalker)
 
 		// If there was an error with the Funcs, set it and return immediately.
 		if funcErr != nil {
@@ -407,14 +391,10 @@ func parseTemplateError(err error) (templateName string, line int, description s
 // this case, if a template is returned, it may still be usable.)
 func (loader *TemplateLoader) Template(name string) (Template, error) {
 	// Case-insensitive matching of template file name
-	name = strings.ToLower(name)
-	for k := range loader.templatePaths {
-		if name == strings.ToLower(k) {
-			name = k
-		}
-	}
+	templateName := loader.templateNames[strings.ToLower(name)]
+
 	// Look up and return the template.
-	tmpl := loader.templateSet.Lookup(name)
+	tmpl := loader.templateSet.Lookup(templateName)
 
 	// This is necessary.
 	// If a nil loader.compileError is returned directly, a caller testing against
@@ -471,6 +451,11 @@ func ReverseUrl(args ...interface{}) (template.URL, error) {
 	var c Controller
 	if err := c.SetAction(actionSplit[0], actionSplit[1]); err != nil {
 		return "", fmt.Errorf("reversing %s: %s", action, err)
+	}
+
+	if len(c.MethodType.Args) < len(args)-1 {
+		return "", fmt.Errorf("reversing %s: route defines %d args, but received %d",
+			action, len(c.MethodType.Args), len(args)-1)
 	}
 
 	// Unbind the arguments.
