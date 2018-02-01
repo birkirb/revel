@@ -5,13 +5,10 @@
 package revel
 
 import (
-	"encoding/json"
-	"io/ioutil"
 	"mime/multipart"
 	"net/url"
 	"os"
 	"reflect"
-	"errors"
 )
 
 // Params provides a unified view of the request params.
@@ -34,7 +31,6 @@ type Params struct {
 
 	Files    map[string][]*multipart.FileHeader // Files uploaded in a multipart form
 	tmpFiles []*os.File                         // Temp files used during the request.
-	JSON     []byte                             // JSON data from request body
 }
 
 // ParseParams parses the `http.Request` params into `revel.Controller.Params`
@@ -59,19 +55,6 @@ func ParseParams(params *Params, req *Request) {
 		} else {
 			params.Form = req.MultipartForm.Value
 			params.Files = req.MultipartForm.File
-		}
-	case "application/json":
-		fallthrough
-	case "text/json":
-		if req.Body != nil {
-			if content, err := ioutil.ReadAll(req.Body); err == nil {
-				// We wont bind it until we determine what we are binding too
-				params.JSON = content
-			} else {
-				ERROR.Println("Failed to ready request body bytes", err)
-			}
-		} else {
-			INFO.Println("Json post received with empty body")
 		}
 	}
 
@@ -99,20 +82,6 @@ func (p *Params) Bind(dest interface{}, name string) {
 	p.JSON = nil
 	value.Set(Bind(p, name, value.Type()))
 	p.JSON = jsonData
-}
-
-// Bind binds the JSON data to the dest.
-func (p *Params) BindJSON(dest interface{}) error {
-	value := reflect.ValueOf(dest)
-	if value.Kind() != reflect.Ptr {
-		WARN.Println("BindJSON not a pointer")
-		return errors.New("BindJSON not a pointer")
-	}
-	if err := json.Unmarshal(p.JSON, dest); err != nil {
-		WARN.Println("W: bindMap: Unable to unmarshal request:", err)
-		return err
-	}
-	return nil
 }
 
 // calcValues returns a unified view of the component param maps.
