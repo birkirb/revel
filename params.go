@@ -68,6 +68,12 @@ func ParseParams(params *Params, req *Request) {
 	params.Values = params.calcValues()
 }
 
+func (p *Params) GetJSON() (bytes []byte, err error) {
+	bytes, err = ioutil.ReadAll(p.Body)
+	p.JSON = bytes
+	return
+}
+
 // Bind looks for the named parameter, converts it to the requested type, and
 // writes it into "dest", which must be settable.  If the value can not be
 // parsed, "dest" is set to the zero value.
