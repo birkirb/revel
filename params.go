@@ -68,9 +68,11 @@ func ParseParams(params *Params, req *Request) {
 	params.Values = params.calcValues()
 }
 
-func (p *Params) GetJSON() (bytes []byte, err error) {
+func (p *Params) GetBody() (bytes []byte, err error) {
+	if p.Body == nil {
+		return nil, errors.New("Nil request body")
+	}
 	bytes, err = ioutil.ReadAll(p.Body)
-	p.JSON = bytes
 	return
 }
 
