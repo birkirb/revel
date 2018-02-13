@@ -108,15 +108,15 @@ func (p *Params) BindJSON(dest interface{}) error {
 	if p.Body == nil {
 		return errors.New("Empty body")
 	}
+	if p.JSON != nil {
+		return json.Unmarshal(p.JSON, dest)
+	}
 	content, err := ioutil.ReadAll(p.Body)
 	if err != nil {
 		return err
 	}
 	p.JSON = content
-	if err := json.Unmarshal(content, dest); err != nil {
-		return err
-	}
-	return nil
+	return json.Unmarshal(content, dest)
 }
 
 // calcValues returns a unified view of the component param maps.
