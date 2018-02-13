@@ -103,7 +103,6 @@ func (p *Params) Bind(dest interface{}, name string) {
 func (p *Params) BindJSON(dest interface{}) error {
 	value := reflect.ValueOf(dest)
 	if value.Kind() != reflect.Ptr {
-		WARN.Println("BindJSON not a pointer")
 		return errors.New("BindJSON not a pointer")
 	}
 	if p.Body == nil {
@@ -115,7 +114,6 @@ func (p *Params) BindJSON(dest interface{}) error {
 	}
 	p.JSON = content
 	if err := json.Unmarshal(content, dest); err != nil {
-		WARN.Println("W: bindMap: Unable to unmarshal request:", err)
 		return err
 	}
 	return nil
