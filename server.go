@@ -131,7 +131,6 @@ func Run(port int) {
 		port = HTTPPort
 	}
 
-	// var network = "tcp"
 	var localAddress string
 
 	// If the port is zero, treat the address as a fully qualified local address.
@@ -159,24 +158,6 @@ func Run(port int) {
 		time.Sleep(100 * time.Millisecond)
 		fmt.Printf("Listening on %s...\n", Server.Addr)
 	}()
-
-	// *** ORIGINAL CODE START
-	// if HttpSsl {
-	// 	if network != "tcp" {
-	// 		// This limitation is just to reduce complexity, since it is standard
-	// 		// to terminate SSL upstream when using unix domain sockets.
-	// 		ERROR.Fatalln("SSL is only supported for TCP sockets. Specify a port to listen on.")
-	// 	}
-	// 	ERROR.Fatalln("Failed to listen:",
-	// 		Server.ListenAndServeTLS(HttpSslCert, HttpSslKey))
-	// } else {
-	// 	listener, err := net.Listen(network, localAddress)
-	// 	if err != nil {
-	// 		ERROR.Fatalln("Failed to listen:", err)
-	// 	}
-	// 	ERROR.Fatalln("Failed to serve:", Server.Serve(listener))
-	// }
-	// *** ORIGINAL CODE END
 
 	Server = &http.Server{
 		Addr:    localAddress,
