@@ -36,7 +36,7 @@ type Params struct {
 	Body     io.ReadCloser
 	Files    map[string][]*multipart.FileHeader // Files uploaded in a multipart form
 	tmpFiles []*os.File                         // Temp files used during the request.
-	JSON     []byte
+	JSON     []byte                             // JSON data from request body
 }
 
 // ParseParams parses the `http.Request` params into `revel.Controller.Params`
