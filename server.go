@@ -7,13 +7,14 @@ package revel
 import (
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/facebookgo/grace/gracehttp"
 	"golang.org/x/net/websocket"
 )
 
@@ -23,6 +24,7 @@ var (
 	MainTemplateLoader *TemplateLoader
 	MainWatcher        *Watcher
 	Server             *http.Server
+	wg                 sync.WaitGroup
 )
 
 // This method handles all requests.  It dispatches to handleInternal after
@@ -56,6 +58,8 @@ func handleInternal(w http.ResponseWriter, r *http.Request, ws *websocket.Conn) 
 	start := time.Now()
 	clientIP := ClientIP(r)
 
+	wg.Add(1)
+	defer wg.Done()
 	var (
 		req  = NewRequest(r)
 		resp = NewResponse(w)
@@ -127,7 +131,6 @@ func Run(port int) {
 		port = HTTPPort
 	}
 
-	var network = "tcp"
 	var localAddress string
 
 	// If the port is zero, treat the address as a fully qualified local address.
@@ -135,7 +138,7 @@ func Run(port int) {
 	// e.g. unix:/tmp/app.socket or tcp6:::1 (equivalent to tcp6:0:0:0:0:0:0:0:1)
 	if port == 0 {
 		parts := strings.SplitN(address, ":", 2)
-		network = parts[0]
+		// network = parts[0]
 		localAddress = parts[1]
 	} else {
 		localAddress = address + ":" + strconv.Itoa(port)
@@ -150,26 +153,27 @@ func Run(port int) {
 
 	InitServer()
 
+	// Crazy Harness needs this output for "revel run" to work.
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		fmt.Printf("Listening on %s...\n", Server.Addr)
 	}()
 
-	if HTTPSsl {
-		if network != "tcp" {
-			// This limitation is just to reduce complexity, since it is standard
-			// to terminate SSL upstream when using unix domain sockets.
-			ERROR.Fatalln("SSL is only supported for TCP sockets. Specify a port to listen on.")
-		}
-		ERROR.Fatalln("Failed to listen:",
-			Server.ListenAndServeTLS(HTTPSslCert, HTTPSslKey))
-	} else {
-		listener, err := net.Listen(network, Server.Addr)
-		if err != nil {
-			ERROR.Fatalln("Failed to listen:", err)
-		}
-		ERROR.Fatalln("Failed to serve:", Server.Serve(listener))
+	Server = &http.Server{
+		Addr:    localAddress,
+		Handler: http.HandlerFunc(handle),
 	}
+
+	if err := gracehttp.Serve(Server); err != nil {
+		ERROR.Fatalln("Failed to serve:", err)
+	}
+
+	INFO.Println("Waiting for handlers to complete.")
+	wg.Wait()
+	INFO.Println("Running Shutdown Hooks.")
+	runShutdownHooks()
+
+	INFO.Println("Exit.")
 }
 
 func runStartupHooks() {
@@ -183,6 +187,14 @@ type StartupHook struct {
 	order int
 	f     func()
 }
+
+func runShutdownHooks() {
+	for _, hook := range shutdownHooks {
+		hook()
+	}
+}
+
+var shutdownHooks []func()
 
 type StartupHooks []StartupHook
 
@@ -242,4 +254,42 @@ func OnAppStart(f func(), order ...int) {
 		o = order[0]
 	}
 	startupHooks = append(startupHooks, StartupHook{order: o, f: f})
+}
+
+// Register a function to be run at app shutdown.
+//
+// The order you register the functions will be the order they are run.
+// You can think of it as a FIFO queue.
+// This process will happen after the server has received a shutdown signal,
+// and after the server has stopped listening for connections.
+//
+// If your application spawns it's own goroutines it will also be responsible
+// for the graceful cleanup of those. Otherwise they will terminate with the main thread.
+//
+// Example:
+//
+//      // from: yourapp/app/controllers/somefile.go
+//      func ShutdownBackgroundDBProcess() {
+//          // waits for background process to complete,
+//          // or sends a signal on a termination channel.
+//      }
+//
+//      func CloseDB() {
+//          // do DB cleanup stuff here
+//      }
+//
+//      // from: yourapp/app/init.go
+//      func init() {
+//          // set up filters...
+//
+//          // register startup functions
+//          revel.OnAppShutdown(ShutdownBackgroundDBProcess)
+//          revel.OnAppShutdown(CloseDB)
+//      }
+//
+// This can be useful when you need to close client connections, files,
+// shutdown or terminate monitors and other goroutines.
+//
+func OnAppShutdown(f func()) {
+	shutdownHooks = append(shutdownHooks, f)
 }
